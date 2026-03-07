@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ntu Television - Viewer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>📺 Ntu Television - Live</h1>
+        <video id="remoteVideo" autoplay playsinline></video>
+        <div id="status"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let peerConnection;
+        const remoteVideo = document.getElementById('remoteVideo');
+        const statusDiv = document.getElementById('status');
+
+        const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+        socket.emit('viewer-ready');
+
+        socket.on('no-broadcast', () => {
+            statusDiv.textContent = 'No broadcast is currently active.';
+        });
+
+        socket.on('broadcast-ended', () => {
+            statusDiv.textContent = 'The broadcast has ended.';
+            if (peerConnection) peerConnection.close();
+        });
+
+        socket.on('offer', async (data) => {
+            statusDiv.textContent = 'Received offer, creating answer...';
+            peerConnection = new RTCPeerConnection(configuration);
+
+            peerConnection.ontrack = (event) => {
+                remoteVideo.srcObject = event.streams[0];
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { target: data.from, candidate: event.candidate });
+                }
+            };
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit('answer', { target: data.from, sdp: peerConnection.localDescription });
+        });
+
+        socket.on('ice-candidate', async (data) => {
+            if (peerConnection && data.candidate) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
+        });
+    </script>
+</body>
+</html>
