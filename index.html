@@ -3,6 +3,7 @@
 <head>
     <title>Ntu Television - Viewer</title>
     <link rel="stylesheet" href="style.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
 <body>
     <div class="mode-switch">
@@ -10,71 +11,148 @@
     </div>
     <div class="container">
         <h1>📺 Ntu Television - Live</h1>
-        <video id="remoteVideo" autoplay playsinline></video>
-        <div id="status"></div>
+        <video id="remoteVideo" autoplay playsinline controls></video>
+        <div id="status">Initializing...</div>
+        <button id="retryBtn" style="display:none; margin-top:10px;">Retry Connection</button>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        // (same JavaScript as before – unchanged)
-        const socket = io();
-        let peerConnection;
+        const socket = io({
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000
+        });
+        
+        let peerConnection = null;
+        let isWaitingForBroadcast = false;
+        
         const remoteVideo = document.getElementById('remoteVideo');
         const statusDiv = document.getElementById('status');
+        const retryBtn = document.getElementById('retryBtn');
 
-        const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+        const configuration = { 
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] 
+        };
 
-        statusDiv.textContent = 'Connecting to server...';
-        socket.emit('viewer-ready');
-        console.log('👀 Viewer ready signal sent');
+        // Initialize connection
+        function initViewer() {
+            statusDiv.textContent = 'Connecting to server...';
+            retryBtn.style.display = 'none';
+            isWaitingForBroadcast = true;
+            
+            // Only emit ready if socket is connected
+            if (socket.connected) {
+                socket.emit('viewer-ready');
+                console.log('👀 Viewer ready signal sent');
+            } else {
+                socket.once('connect', () => {
+                    socket.emit('viewer-ready');
+                    console.log('👀 Viewer ready signal sent (after connect)');
+                });
+            }
+        }
+
+        socket.on('connect', () => {
+            console.log('✅ Connected to server');
+            if (!isWaitingForBroadcast) {
+                initViewer();
+            }
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error('❌ Socket connection error:', err);
+            statusDiv.textContent = 'Server connection failed';
+            retryBtn.style.display = 'inline-block';
+        });
+
+        socket.on('disconnect', () => {
+            console.warn('⚠️ Disconnected from server');
+            statusDiv.textContent = 'Disconnected from server';
+            cleanupConnection();
+        });
 
         socket.on('no-broadcast', () => {
-            statusDiv.textContent = 'No broadcast is currently active.';
-            console.log('❌ No broadcast');
+            statusDiv.textContent = 'No broadcast is currently active. Waiting for admin...';
+            console.log('❌ No broadcast, waiting...');
+            // Keep waiting - don't show retry button yet
         });
 
         socket.on('broadcast-ended', () => {
             statusDiv.textContent = 'The broadcast has ended.';
             console.log('📴 Broadcast ended');
-            if (peerConnection) peerConnection.close();
+            cleanupConnection();
+            // Auto-retry after 2 seconds
+            setTimeout(() => {
+                if (socket.connected) {
+                    statusDiv.textContent = 'Waiting for next broadcast...';
+                    socket.emit('viewer-ready');
+                }
+            }, 2000);
         });
 
-        socket.on('offer', async (data) => {
-            statusDiv.textContent = 'Received offer, creating answer...';
-            console.log(`📥 Received offer from ${data.from}`);
-
+        function cleanupConnection() {
             if (peerConnection) {
+                peerConnection.ontrack = null;
+                peerConnection.onicecandidate = null;
+                peerConnection.onconnectionstatechange = null;
                 peerConnection.close();
+                peerConnection = null;
+                console.log('🧹 Cleaned up peer connection');
             }
+            remoteVideo.srcObject = null;
+            isWaitingForBroadcast = false;
+        }
 
-            peerConnection = new RTCPeerConnection(configuration);
+        socket.on('offer', async (data) => {
+            console.log(`📥 Received offer from ${data.from}`);
+            statusDiv.textContent = 'Received broadcast offer...';
 
-            peerConnection.ontrack = (event) => {
-                console.log('🎥 Received track, setting video source');
-                remoteVideo.srcObject = event.streams[0];
-            };
-
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    console.log(`❄️ Sending ICE candidate to ${data.from}`);
-                    socket.emit('ice-candidate', { target: data.from, candidate: event.candidate });
-                }
-            };
-
-            peerConnection.onconnectionstatechange = () => {
-                console.log(`🔗 Connection state: ${peerConnection.connectionState}`);
-            };
+            // Clean up any existing connection
+            cleanupConnection();
 
             try {
+                peerConnection = new RTCPeerConnection(configuration);
+
+                peerConnection.ontrack = (event) => {
+                    console.log('🎥 Received track, setting video source');
+                    if (event.streams && event.streams[0]) {
+                        remoteVideo.srcObject = event.streams[0];
+                        statusDiv.textContent = 'Broadcast connected!';
+                    }
+                };
+
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        console.log(`❄️ Sending ICE candidate to ${data.from}`);
+                        socket.emit('ice-candidate', { target: data.from, candidate: event.candidate });
+                    }
+                };
+
+                peerConnection.onconnectionstatechange = () => {
+                    console.log(`🔗 Connection state: ${peerConnection.connectionState}`);
+                    if (peerConnection.connectionState === 'connected') {
+                        statusDiv.textContent = 'Connected to broadcast';
+                    } else if (peerConnection.connectionState === 'failed') {
+                        statusDiv.textContent = 'Connection failed';
+                        retryBtn.style.display = 'inline-block';
+                    } else if (peerConnection.connectionState === 'disconnected') {
+                        statusDiv.textContent = 'Disconnected';
+                    }
+                };
+
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
+                
                 console.log(`📤 Sending answer to ${data.from}`);
                 socket.emit('answer', { target: data.from, sdp: peerConnection.localDescription });
-                statusDiv.textContent = 'Connected, waiting for video...';
+                statusDiv.textContent = 'Establishing connection...';
+                
             } catch (err) {
                 console.error('❌ Error handling offer:', err);
                 statusDiv.textContent = 'Error: ' + err.message;
+                retryBtn.style.display = 'inline-block';
             }
         });
 
@@ -88,7 +166,24 @@
                 }
             }
         });
+
+        retryBtn.addEventListener('click', () => {
+            initViewer();
+        });
+
+        // Handle video errors
+        remoteVideo.addEventListener('error', (e) => {
+            console.error('❌ Video error:', e);
+            statusDiv.textContent = 'Video playback error';
+        });
+
+        // Start initialization
+        initViewer();
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            cleanupConnection();
+        });
     </script>
 </body>
 </html>
-
