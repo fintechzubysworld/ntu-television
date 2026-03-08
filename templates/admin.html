@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ntustream Camera Admin</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f0f2f5; }
+        .card { background: white; padding: 20px; border-radius: 8px; max-width: 400px; margin: auto; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; }
+        label { font-weight: bold; display: block; margin-top: 10px; }
+        input, button { padding: 10px; margin: 8px 0; width: 100%; box-sizing: border-box; border-radius: 4px; border: 1px solid #ddd; }
+        button { background: #007bff; color: white; border: none; cursor: pointer; font-size: 16px; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #status { margin-top: 15px; font-weight: bold; text-align: center; padding: 10px; background: #f9f9f9; border-radius: 4px; }
+        .note { font-size: 0.9em; color: #666; margin-top: 15px; }
+        .error-message { color: red; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Ntustream Admin</h1>
+        <label for="device">Video Device (without quotes):</label>
+        <input type="text" id="device" placeholder="e.g., Integrated Webcam">
+
+        <label for="audio_device">Audio Device (optional, without quotes):</label>
+        <input type="text" id="audio_device" placeholder="e.g., Microphone (Realtek Audio)">
+
+        <button id="startBtn" onclick="startBroadcast()">Start Broadcast</button>
+        <button id="stopBtn" onclick="stopBroadcast()" disabled>Stop Broadcast</button>
+        <div id="status">Checking status...</div>
+        <div id="error" class="error-message"></div>
+        <div class="note">
+            <strong>Finding your devices:</strong><br>
+            • Run in Command Prompt: <code>ffmpeg -list_devices true -f dshow -i dummy</code><br>
+            • Look for "DirectShow video devices" and "DirectShow audio devices".<br>
+            • Enter the exact name (e.g., <code>Integrated Webcam</code>) – no quotes needed.<br>
+            • Leave audio blank if you don't want sound.
+        </div>
+    </div>
+
+    <script>
+        const errorDiv = document.getElementById('error');
+
+        async function updateStatus() {
+            const statusDiv = document.getElementById('status');
+            try {
+                const res = await fetch('/status');
+                if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+                const contentType = res.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await res.text();
+                    throw new Error(`Expected JSON, got HTML: ${text.substring(0, 100)}`);
+                }
+                const data = await res.json();
+                const startBtn = document.getElementById('startBtn');
+                const stopBtn = document.getElementById('stopBtn');
+
+                if (data.active) {
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    statusDiv.innerHTML = 'Status: <span style="color:green;">● Live</span>';
+                } else {
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    statusDiv.innerHTML = 'Status: <span style="color:red;">● Offline</span>';
+                }
+                errorDiv.innerHTML = ''; // clear any previous error
+            } catch (err) {
+                console.error('Status check failed:', err);
+                statusDiv.innerHTML = 'Status: <span style="color:orange;">⚠️ Connection Error</span>';
+            }
+        }
+
+        async function startBroadcast() {
+            const device = document.getElementById('device').value;
+            if (!device) {
+                alert('Please enter a camera device');
+                return;
+            }
+            const audioDevice = document.getElementById('audio_device').value;
+
+            const startBtn = document.getElementById('startBtn');
+            startBtn.disabled = true;
+            startBtn.innerText = 'Starting...';
+            errorDiv.innerHTML = '';
+            try {
+                const res = await fetch('/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({device: device, audio_device: audioDevice})
+                });
+                
+                const contentType = res.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await res.text();
+                    throw new Error(`Server returned HTML instead of JSON. Status ${res.status}. Response: ${text.substring(0, 200)}`);
+                }
+                
+                const result = await res.json();
+                if (result.status === 'ok') {
+                    updateStatus();
+                } else {
+                    errorDiv.innerHTML = 'Error: ' + (result.message || 'Unknown error');
+                }
+            } catch (err) {
+                console.error('Start failed:', err);
+                errorDiv.innerHTML = 'Error: ' + err.message;
+            } finally {
+                startBtn.disabled = false;
+                startBtn.innerText = 'Start Broadcast';
+            }
+        }
+
+        async function stopBroadcast() {
+            const stopBtn = document.getElementById('stopBtn');
+            stopBtn.disabled = true;
+            stopBtn.innerText = 'Stopping...';
+            errorDiv.innerHTML = '';
+            try {
+                const res = await fetch('/stop', {method: 'POST'});
+                
+                const contentType = res.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await res.text();
+                    throw new Error(`Server returned HTML. Response: ${text.substring(0, 200)}`);
+                }
+                
+                const result = await res.json();
+                if (result.status === 'ok') {
+                    updateStatus();
+                } else {
+                    errorDiv.innerHTML = 'Error: ' + (result.message || 'Unknown error');
+                }
+            } catch (err) {
+                console.error('Stop failed:', err);
+                errorDiv.innerHTML = 'Error: ' + err.message;
+            } finally {
+                stopBtn.disabled = false;
+                stopBtn.innerText = 'Stop Broadcast';
+            }
+        }
+
+        setInterval(updateStatus, 3000);
+        updateStatus();
+    </script>
+</body>
+</html>
