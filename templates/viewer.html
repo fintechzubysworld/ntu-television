@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ntustream Live</title>
+    <style>
+        body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; flex-direction: column; color: white; font-family: Arial; }
+        video { width: 100%; max-width: 1280px; background: #111; }
+        .offline { text-align: center; }
+        .offline h2 { color: #ccc; }
+    </style>
+    <!-- Use hls.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body>
+    <video id="video" controls autoplay muted></video>
+    <div id="offlineMessage" class="offline" style="display: none;">
+        <h2>Broadcast is offline</h2>
+        <p>Check back later.</p>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const offlineDiv = document.getElementById('offlineMessage');
+        const streamUrl = '/streams/index.m3u8';
+        let hls = null;
+
+        function initPlayer() {
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
+            if (Hls.isSupported()) {
+                hls = new Hls();
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    console.error('HLS error:', data);
+                    if (data.fatal) {
+                        video.style.display = 'none';
+                        offlineDiv.style.display = 'block';
+                    }
+                });
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    video.style.display = 'block';
+                    offlineDiv.style.display = 'none';
+                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari native HLS
+                video.src = streamUrl;
+                video.addEventListener('loadedmetadata', function() {
+                    video.style.display = 'block';
+                    offlineDiv.style.display = 'none';
+                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                });
+                video.addEventListener('error', function() {
+                    video.style.display = 'none';
+                    offlineDiv.style.display = 'block';
+                });
+            } else {
+                video.innerHTML = 'HLS is not supported in this browser.';
+            }
+        }
+
+        async function checkStream() {
+            try {
+                const res = await fetch('/status');
+                const data = await res.json();
+                if (data.active) {
+                    if (!video.src || video.paused) {
+                        initPlayer();
+                    }
+                } else {
+                    if (hls) hls.destroy();
+                    video.style.display = 'none';
+                    offlineDiv.style.display = 'block';
+                }
+            } catch (err) {
+                console.error('Status check failed', err);
+            }
+        }
+
+        checkStream();
+        setInterval(checkStream, 10000);
+    </script>
+</body>
+</html>
